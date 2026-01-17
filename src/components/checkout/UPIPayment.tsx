@@ -20,18 +20,24 @@ interface UPIPaymentProps {
   merchantName?: string;
 }
 
-// UPI deep link configurations
+// UPI deep link configurations for different apps
 const UPI_APPS = {
   PhonePe: {
-    scheme: 'phonepe://pay',
+    name: 'PhonePe',
+    packageName: 'com.phonepe.app',
+    scheme: 'phonepe',
     fallback: 'https://phon.pe/ru_all',
   },
   GPay: {
-    scheme: 'tez://upi/pay',
-    fallback: 'https://pay.google.com',
+    name: 'Google Pay',
+    packageName: 'com.google.android.apps.nbu.paisa.user',
+    scheme: 'gpay',
+    fallback: 'https://pay.google.com/gp/w/u/0/home/activity',
   },
   Paytm: {
-    scheme: 'paytmmp://pay',
+    name: 'Paytm',
+    packageName: 'net.one97.paytm',
+    scheme: 'paytm',
     fallback: 'https://paytm.com',
   },
 };
@@ -66,18 +72,7 @@ const UPIPayment: React.FC<UPIPaymentProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const generateUPILink = (appKey: keyof typeof UPI_APPS) => {
-    const app = UPI_APPS[appKey];
-    const params = new URLSearchParams({
-      pa: upiId,
-      pn: merchantName,
-      am: amount.toString(),
-      cu: 'INR',
-      tn: `Payment for order`,
-    });
-    return `${app.scheme}?${params.toString()}`;
-  };
-
+  // Generate generic UPI link that works with all apps
   const generateGenericUPILink = () => {
     const params = new URLSearchParams({
       pa: upiId,
@@ -89,6 +84,24 @@ const UPIPayment: React.FC<UPIPaymentProps> = ({
     return `upi://pay?${params.toString()}`;
   };
 
+  // Generate Android intent URL for specific app
+  const generateIntentUrl = (appKey: keyof typeof UPI_APPS) => {
+    const app = UPI_APPS[appKey];
+    const upiLink = generateGenericUPILink();
+    // Android intent URL format for opening specific app
+    return `intent://pay?${upiLink.split('?')[1]}#Intent;scheme=upi;package=${app.packageName};end`;
+  };
+
+  // Check if device is mobile
+  const isMobileDevice = () => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  };
+
+  // Check if Android device
+  const isAndroid = () => {
+    return /Android/i.test(navigator.userAgent);
+  };
+
   const handleMethodSelect = (method: string) => {
     setSelectedMethod(method);
     
@@ -97,19 +110,39 @@ const UPIPayment: React.FC<UPIPaymentProps> = ({
       return;
     }
 
-    // Try to open the app
     const appKey = method as keyof typeof UPI_APPS;
-    if (UPI_APPS[appKey]) {
-      const upiLink = generateUPILink(appKey);
+    if (UPI_APPS[appKey] && isMobileDevice()) {
+      const upiLink = generateGenericUPILink();
       
-      // Create a hidden link and click it to open the app
-      const link = document.createElement('a');
-      link.href = upiLink;
-      link.click();
+      if (isAndroid()) {
+        // For Android, try intent URL first, then fallback to generic UPI
+        const intentUrl = generateIntentUrl(appKey);
+        
+        // Create iframe to try opening the app without navigation
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = upiLink;
+        document.body.appendChild(iframe);
+        
+        // Also try direct navigation after a brief delay
+        setTimeout(() => {
+          window.location.href = upiLink;
+        }, 100);
+        
+        // Clean up iframe
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 2000);
+      } else {
+        // For iOS, use generic UPI link
+        window.location.href = upiLink;
+      }
       
       setAppOpened(true);
-      setShowQR(true);
     }
+    
+    // Always show QR as fallback
+    setShowQR(true);
   };
 
   const handleConfirmPayment = () => {
