@@ -1,86 +1,43 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { useCart } from '@/contexts/CartContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, CheckCircle, Truck, ArrowLeft, Check, Shield } from 'lucide-react';
-import UPIPayment from '@/components/checkout/UPIPayment';
+import { Loader2, CheckCircle, Truck, ArrowLeft, Check, Shield, CreditCard, QrCode } from 'lucide-react';
+import CashfreePayment from '@/components/checkout/CashfreePayment';
+import ScanToPayment from '@/components/checkout/ScanToPayment';
 import paytmQrCode from '@/assets/paytm-qr.png';
-import phonePeLogo from '@/assets/phonepe-logo.png';
-import gpayLogo from '@/assets/gpay-logo.png';
-import paytmLogo from '@/assets/paytm-logo.png';
-import upiIcon from '@/assets/upi-icon.svg';
 import codIcon from '@/assets/cod-icon.png';
+import scanToPayIcon from '@/assets/scan-to-pay-icon.png';
 
 const COD_CHARGE = 59;
 
 type CheckoutStep = 'address' | 'summary' | 'payment';
-
-// Payment logos for rotating banner
-const paymentLogos = [
-  { id: 'phonepe', logo: phonePeLogo, name: 'PhonePe' },
-  { id: 'gpay', logo: gpayLogo, name: 'GPay' },
-  { id: 'paytm', logo: paytmLogo, name: 'Paytm' },
-];
-
-const PayOnlinePromo = () => {
-  const [currentLogoIndex, setCurrentLogoIndex] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentLogoIndex((prev) => (prev + 1) % paymentLogos.length);
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-4 mb-4 border border-blue-200">
-      <div className="flex items-center gap-3">
-        <div className="relative w-10 h-10 overflow-hidden rounded-lg bg-white flex items-center justify-center shadow-sm">
-          {paymentLogos.map((item, index) => (
-            <img
-              key={item.id}
-              src={item.logo}
-              alt={item.name}
-              className={`absolute w-8 h-8 object-contain transition-all duration-500 ease-in-out ${
-                index === currentLogoIndex 
-                  ? 'opacity-100 translate-x-0' 
-                  : 'opacity-0 -translate-x-8'
-              }`}
-            />
-          ))}
-        </div>
-        <p className="text-primary font-semibold text-base">
-          Pay online & get EXTRA <span className="text-green-600">₹33 off</span>
-        </p>
-      </div>
-    </div>
-  );
-};
+type PaymentMethod = 'cashfree' | 'scan' | 'cod';
 
 const Checkout = () => {
   const { items, totalAmount, clearCart } = useCart();
   const { user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [orderId, setOrderId] = useState<string | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cod'>('upi');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cashfree');
   const [showCodModal, setShowCodModal] = useState(false);
   const [currentStep, setCurrentStep] = useState<CheckoutStep>('address');
   const [merchantSettings, setMerchantSettings] = useState({ upiId: 'merchant@paytm', merchantName: 'Flipkart', qrUrl: '' });
-  
+
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -120,16 +77,52 @@ const Checkout = () => {
     fetchSettings();
   }, []);
 
+  // Check for Cashfree payment callback
+  useEffect(() => {
+    const cfOrderId = searchParams.get('cf_order_id');
+    const status = searchParams.get('status');
+    
+    if (cfOrderId && status) {
+      if (status === 'PAID') {
+        // Verify payment and place order
+        verifyAndPlaceOrder(cfOrderId);
+      } else if (status === 'FAILED' || status === 'CANCELLED') {
+        toast({
+          title: 'Payment Failed',
+          description: 'Your payment was not successful. Please try again.',
+          variant: 'destructive',
+        });
+      }
+    }
+  }, [searchParams]);
+
+  const verifyAndPlaceOrder = async (cfOrderId: string) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('cashfree-payment', {
+        body: { action: 'verify_payment', orderId: cfOrderId },
+      });
+
+      if (error || !data.success) {
+        throw new Error('Payment verification failed');
+      }
+
+      if (data.paymentStatus === 'paid') {
+        await placeOrder(`CASHFREE:${cfOrderId}`, 'paid');
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Payment verification failed',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // Calculate original price (before discount)
   const originalTotal = items.reduce((sum, item) => sum + (item.product?.original_price || 0) * item.quantity, 0);
   const discount = originalTotal - totalAmount;
 
   // Redirect to cart if empty (allow guest checkout)
-  if (items.length === 0 && !orderPlaced) {
-    navigate('/cart');
-    return null;
-  }
-
   if (items.length === 0 && !orderPlaced) {
     navigate('/cart');
     return null;
@@ -148,7 +141,6 @@ const Checkout = () => {
       });
       return false;
     }
-    // Require email for guest users
     if (!user && !formData.email) {
       toast({
         title: 'Error',
@@ -176,7 +168,6 @@ const Checkout = () => {
     try {
       const shippingAddress = `${formData.fullName}\n${formData.phone}\n${formData.houseNo}, ${formData.roadName}\n${formData.city}, ${formData.state} - ${formData.pincode}`;
 
-      // Create order (for logged-in or guest user)
       const orderData: any = {
         total_amount: totalAmount,
         shipping_address: shippingAddress,
@@ -200,7 +191,6 @@ const Checkout = () => {
 
       if (orderError) throw orderError;
 
-      // Create order items
       const orderItems = items.map((item) => ({
         order_id: order.id,
         product_id: item.product_id,
@@ -209,15 +199,12 @@ const Checkout = () => {
         price: item.product?.selling_price || 0,
       }));
 
-      const { error: itemsError } = await supabase
-        .from('order_items')
-        .insert(orderItems);
+      const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
 
       if (itemsError) throw itemsError;
 
-      // Clear cart
       await clearCart();
-      
+
       setOrderId(order.id);
       setOrderPlaced(true);
 
@@ -236,17 +223,29 @@ const Checkout = () => {
     }
   };
 
-  const handleUPIPayment = (utrNumber: string, method: string) => {
-    placeOrder(`UPI:${method.toUpperCase()}:${utrNumber}`, 'paid');
+  const handleScanPayment = (utrNumber: string) => {
+    placeOrder(`SCAN:UPI:${utrNumber}`, 'paid');
+  };
+
+  const handleCashfreeSuccess = (paymentId: string) => {
+    placeOrder(`CASHFREE:${paymentId}`, 'paid');
+  };
+
+  const handleCashfreeFailure = (error: string) => {
+    toast({
+      title: 'Payment Failed',
+      description: error,
+      variant: 'destructive',
+    });
   };
 
   const handleCODClick = () => {
     setShowCodModal(true);
   };
 
-  const handleCODConfirmPayment = (utrNumber: string, method: string) => {
+  const handleCODConfirmPayment = (utrNumber: string) => {
     setShowCodModal(false);
-    placeOrder(`COD:FEE_PAID:${method.toUpperCase()}:${utrNumber}`, 'cod_fee_paid');
+    placeOrder(`COD:FEE_PAID:${utrNumber}`, 'cod_fee_paid');
   };
 
   const steps = [
@@ -288,9 +287,9 @@ const Checkout = () => {
       {/* Header with back button */}
       <header className="bg-primary text-primary-foreground py-4 sticky top-0 z-50">
         <div className="container mx-auto px-4 flex items-center gap-4">
-          <Button 
-            variant="ghost" 
-            size="icon" 
+          <Button
+            variant="ghost"
+            size="icon"
             className="text-primary-foreground hover:bg-primary-foreground/10"
             onClick={() => {
               if (currentStep === 'address') navigate('/cart');
@@ -315,38 +314,38 @@ const Checkout = () => {
             {steps.map((step, index) => (
               <React.Fragment key={step.id}>
                 <div className="flex items-center gap-2">
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-medium ${
-                    getStepStatus(step.id) === 'completed' 
-                      ? 'bg-primary text-primary-foreground' 
-                      : getStepStatus(step.id) === 'current'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted-foreground/20 text-muted-foreground'
-                  }`}>
-                    {getStepStatus(step.id) === 'completed' ? (
-                      <Check className="h-4 w-4" />
-                    ) : (
-                      step.number
-                    )}
+                  <div
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-medium ${
+                      getStepStatus(step.id) === 'completed'
+                        ? 'bg-primary text-primary-foreground'
+                        : getStepStatus(step.id) === 'current'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted-foreground/20 text-muted-foreground'
+                    }`}
+                  >
+                    {getStepStatus(step.id) === 'completed' ? <Check className="h-4 w-4" /> : step.number}
                   </div>
-                  <span className={`text-sm hidden sm:inline ${
-                    getStepStatus(step.id) === 'current' ? 'font-semibold text-foreground' : 'text-muted-foreground'
-                  }`}>
+                  <span
+                    className={`text-sm hidden sm:inline ${
+                      getStepStatus(step.id) === 'current' ? 'font-semibold text-foreground' : 'text-muted-foreground'
+                    }`}
+                  >
                     {step.label}
                   </span>
                 </div>
                 {index < steps.length - 1 && (
-                  <div className={`w-12 sm:w-24 h-0.5 mx-2 ${
-                    getStepStatus(steps[index + 1].id) !== 'upcoming' 
-                      ? 'bg-primary' 
-                      : 'bg-muted-foreground/20'
-                  }`} />
+                  <div
+                    className={`w-12 sm:w-24 h-0.5 mx-2 ${
+                      getStepStatus(steps[index + 1].id) !== 'upcoming' ? 'bg-primary' : 'bg-muted-foreground/20'
+                    }`}
+                  />
                 )}
               </React.Fragment>
             ))}
           </div>
         </div>
       </div>
-      
+
       <main className="flex-1 container mx-auto px-4 py-6">
         {/* Step 1: Address */}
         {currentStep === 'address' && (
@@ -397,7 +396,9 @@ const Checkout = () => {
                 className="h-14 text-base bg-background border border-input rounded-md px-3 focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 {indianStates.map((state) => (
-                  <option key={state} value={state}>{state}</option>
+                  <option key={state} value={state}>
+                    {state}
+                  </option>
                 ))}
               </select>
             </div>
@@ -433,14 +434,13 @@ const Checkout = () => {
               {items.map((item) => (
                 <div key={item.id} className="pb-4 last:pb-0">
                   <div className="flex gap-4">
-                    <img 
-                      src={item.product?.image_url || '/placeholder.svg'} 
+                    <img
+                      src={item.product?.image_url || '/placeholder.svg'}
                       alt={item.product?.name}
                       className="w-20 h-20 object-contain rounded bg-white border"
                     />
                     <div className="flex-1">
                       <h4 className="font-medium line-clamp-2 text-base">{item.product?.name}</h4>
-                      {/* Assured Badge */}
                       <div className="mt-2">
                         <span className="inline-flex items-center gap-1 bg-[#2874f0] text-white text-xs px-2 py-0.5 rounded">
                           <span className="font-bold italic">f</span>
@@ -452,7 +452,12 @@ const Checkout = () => {
                   <div className="flex items-center gap-3 mt-3">
                     <span className="text-muted-foreground">Qty: {item.quantity}</span>
                     <span className="text-green-600 font-semibold">
-                      {Math.round(((item.product?.original_price || 0) - (item.product?.selling_price || 0)) / (item.product?.original_price || 1) * 100)}%
+                      {Math.round(
+                        (((item.product?.original_price || 0) - (item.product?.selling_price || 0)) /
+                          (item.product?.original_price || 1)) *
+                          100
+                      )}
+                      %
                     </span>
                     <span className="text-muted-foreground line-through text-sm">
                       ₹{(item.product?.original_price || 0).toLocaleString('en-IN')}
@@ -509,37 +514,65 @@ const Checkout = () => {
         {/* Step 3: Payment */}
         {currentStep === 'payment' && (
           <div className="max-w-2xl mx-auto">
-            {/* Pay Online Promo Banner */}
-            <PayOnlinePromo />
-            
             <Card>
               <CardHeader>
-                <CardTitle>Payment Method</CardTitle>
+                <CardTitle>Select Payment Method</CardTitle>
               </CardHeader>
               <CardContent>
-                <RadioGroup 
-                  value={paymentMethod} 
-                  onValueChange={(value) => setPaymentMethod(value as 'upi' | 'cod')}
+                <RadioGroup
+                  value={paymentMethod}
+                  onValueChange={(value) => setPaymentMethod(value as PaymentMethod)}
                   className="space-y-3"
                 >
-                  <div className={`flex items-center space-x-3 p-4 rounded-lg border-2 transition-colors ${paymentMethod === 'upi' ? 'border-primary bg-primary/5' : 'hover:border-primary/50'}`}>
-                    <RadioGroupItem value="upi" id="upi" />
-                    <Label htmlFor="upi" className="flex items-center gap-3 cursor-pointer flex-1">
-                      <img src={upiIcon} alt="UPI" className="h-10 w-10 object-contain" />
+                  {/* Cashfree Payment Gateway */}
+                  <div
+                    className={`flex items-center space-x-3 p-4 rounded-lg border-2 transition-colors ${
+                      paymentMethod === 'cashfree' ? 'border-purple-500 bg-purple-50' : 'hover:border-purple-300'
+                    }`}
+                  >
+                    <RadioGroupItem value="cashfree" id="cashfree" />
+                    <Label htmlFor="cashfree" className="flex items-center gap-3 cursor-pointer flex-1">
+                      <div className="bg-purple-600 rounded-lg p-2">
+                        <CreditCard className="h-6 w-6 text-white" />
+                      </div>
                       <div>
-                        <p className="font-medium text-primary">Online Pay</p>
-                        <p className="text-sm text-muted-foreground">GPay, PhonePe, Paytm, Other UPI</p>
+                        <p className="font-medium text-purple-700">Online Payment</p>
+                        <p className="text-sm text-muted-foreground">UPI, Cards, Netbanking, Wallets</p>
                       </div>
                     </Label>
                   </div>
-                  <div className={`flex items-center space-x-3 p-4 rounded-lg border-2 transition-colors ${paymentMethod === 'cod' ? 'border-primary bg-primary/5' : 'hover:border-primary/50'}`}>
+
+                  {/* Scan to Pay */}
+                  <div
+                    className={`flex items-center space-x-3 p-4 rounded-lg border-2 transition-colors ${
+                      paymentMethod === 'scan' ? 'border-green-500 bg-green-50' : 'hover:border-green-300'
+                    }`}
+                  >
+                    <RadioGroupItem value="scan" id="scan" />
+                    <Label htmlFor="scan" className="flex items-center gap-3 cursor-pointer flex-1">
+                      <img src={scanToPayIcon} alt="Scan to Pay" className="h-10 w-10 object-contain" />
+                      <div>
+                        <p className="font-medium text-green-700">Scan & Pay</p>
+                        <p className="text-sm text-muted-foreground">Scan QR with any UPI app</p>
+                      </div>
+                    </Label>
+                  </div>
+
+                  {/* Cash on Delivery */}
+                  <div
+                    className={`flex items-center space-x-3 p-4 rounded-lg border-2 transition-colors ${
+                      paymentMethod === 'cod' ? 'border-orange-500 bg-orange-50' : 'hover:border-orange-300'
+                    }`}
+                  >
                     <RadioGroupItem value="cod" id="cod" />
                     <Label htmlFor="cod" className="flex items-center gap-3 cursor-pointer flex-1">
                       <img src={codIcon} alt="Cash on Delivery" className="h-10 w-10 object-contain" />
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
-                          <p className="font-medium">Cash on Delivery</p>
-                          <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">+₹{COD_CHARGE} fee</span>
+                          <p className="font-medium text-orange-700">Cash on Delivery</p>
+                          <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
+                            +₹{COD_CHARGE} fee
+                          </span>
                         </div>
                         <p className="text-sm text-muted-foreground">Pay ₹{COD_CHARGE} online to confirm COD order</p>
                       </div>
@@ -547,17 +580,33 @@ const Checkout = () => {
                   </div>
                 </RadioGroup>
 
-                {paymentMethod === 'upi' && (
-                  <UPIPayment
+                {/* Cashfree Payment */}
+                {paymentMethod === 'cashfree' && (
+                  <CashfreePayment
+                    amount={totalAmount}
+                    orderId={`${Date.now()}`}
+                    customerName={formData.fullName}
+                    customerEmail={formData.email || user?.email || ''}
+                    customerPhone={formData.phone}
+                    onPaymentSuccess={handleCashfreeSuccess}
+                    onPaymentFailure={handleCashfreeFailure}
+                    disabled={loading}
+                  />
+                )}
+
+                {/* Scan to Pay */}
+                {paymentMethod === 'scan' && (
+                  <ScanToPayment
                     amount={totalAmount}
                     qrCodeUrl={merchantSettings.qrUrl || paytmQrCode}
-                    onPaymentConfirm={handleUPIPayment}
+                    onPaymentConfirm={handleScanPayment}
                     disabled={loading}
                     upiId={merchantSettings.upiId}
                     merchantName={merchantSettings.merchantName}
                   />
                 )}
 
+                {/* COD */}
                 {paymentMethod === 'cod' && (
                   <Button
                     className="w-full mt-6 bg-orange-500 hover:bg-orange-600 text-white"
@@ -580,21 +629,23 @@ const Checkout = () => {
           </div>
         )}
       </main>
-      
+
       {/* Sticky Bottom Bar */}
       {(currentStep === 'address' || currentStep === 'summary') && (
         <div className="sticky bottom-0 bg-background border-t p-4">
           <div className="container mx-auto flex items-center justify-between max-w-2xl">
             <div>
-              <p className="text-muted-foreground line-through text-sm">₹{originalTotal.toLocaleString('en-IN')}</p>
+              <p className="text-muted-foreground line-through text-sm">
+                ₹{originalTotal.toLocaleString('en-IN')}
+              </p>
               <p className="text-xl font-bold">₹{totalAmount.toLocaleString('en-IN')}</p>
             </div>
-            <Button 
+            <Button
               size="lg"
               className="bg-orange-500 hover:bg-orange-600 text-white px-8 font-semibold"
               onClick={currentStep === 'address' ? handleAddressContinue : handleSummaryContinue}
             >
-              {currentStep === 'address' ? 'Procced' : 'Continue'}
+              {currentStep === 'address' ? 'Proceed' : 'Continue'}
             </Button>
           </div>
         </div>
@@ -614,23 +665,18 @@ const Checkout = () => {
           <div className="p-6">
             <p className="text-center mb-6">
               <span className="font-semibold">Cash On Delivery</span> is available with a{' '}
-              <span className="font-bold text-orange-600">₹{COD_CHARGE} confirmation charge</span>. 
-              You must pay this small fee online to confirm your COD order.
+              <span className="font-bold text-orange-600">₹{COD_CHARGE} confirmation charge</span>. You must pay this
+              small fee online to confirm your COD order.
             </p>
-            <UPIPayment
+            <ScanToPayment
               amount={COD_CHARGE}
               qrCodeUrl={merchantSettings.qrUrl || paytmQrCode}
               onPaymentConfirm={handleCODConfirmPayment}
               disabled={loading}
-              buttonText={`Pay ₹${COD_CHARGE} to Confirm Order`}
               upiId={merchantSettings.upiId}
               merchantName={merchantSettings.merchantName}
             />
-            <Button
-              variant="outline"
-              className="w-full mt-3"
-              onClick={() => setShowCodModal(false)}
-            >
+            <Button variant="outline" className="w-full mt-3" onClick={() => setShowCodModal(false)}>
               Cancel
             </Button>
           </div>
