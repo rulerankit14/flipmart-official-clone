@@ -35,6 +35,7 @@ const Checkout = () => {
   const [orderId, setOrderId] = useState<string | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cashfree');
   const [showCodModal, setShowCodModal] = useState(false);
+  const [codPaymentMethod, setCodPaymentMethod] = useState<'scan' | 'cashfree'>('scan');
   const [currentStep, setCurrentStep] = useState<CheckoutStep>('address');
   const [merchantSettings, setMerchantSettings] = useState({ upiId: 'merchant@paytm', merchantName: 'Flipkart', qrUrl: '' });
 
@@ -245,7 +246,20 @@ const Checkout = () => {
 
   const handleCODConfirmPayment = (utrNumber: string) => {
     setShowCodModal(false);
-    placeOrder(`COD:FEE_PAID:${utrNumber}`, 'cod_fee_paid');
+    placeOrder(`COD:FEE_PAID:SCAN:${utrNumber}`, 'cod_fee_paid');
+  };
+
+  const handleCODCashfreeSuccess = (paymentId: string) => {
+    setShowCodModal(false);
+    placeOrder(`COD:FEE_PAID:CASHFREE:${paymentId}`, 'cod_fee_paid');
+  };
+
+  const handleCODCashfreeFailure = (error: string) => {
+    toast({
+      title: 'Payment Failed',
+      description: error,
+      variant: 'destructive',
+    });
   };
 
   const steps = [
@@ -663,11 +677,63 @@ const Checkout = () => {
             <h2 className="text-2xl font-bold">Cash On Delivery</h2>
           </div>
           <div className="p-6">
-            <p className="text-center mb-6">
-              <span className="font-semibold">Cash On Delivery</span> is available with a{' '}
-              <span className="font-bold text-orange-600">₹{COD_CHARGE} confirmation charge</span>. You must pay this
-              small fee online to confirm your COD order.
-            </p>
+          <p className="text-center mb-4">
+            <span className="font-semibold">Cash On Delivery</span> is available with a{' '}
+            <span className="font-bold text-orange-600">₹{COD_CHARGE} confirmation charge</span>. You must pay this
+            small fee online to confirm your COD order.
+          </p>
+
+          {/* COD Payment Method Selection */}
+          <div className="space-y-3 mb-4">
+            <button
+              onClick={() => setCodPaymentMethod('cashfree')}
+              className={`w-full flex items-center gap-4 p-4 rounded-lg border-2 transition-all ${
+                codPaymentMethod === 'cashfree'
+                  ? 'border-purple-500 bg-purple-50'
+                  : 'border-gray-200 hover:border-purple-300'
+              }`}
+            >
+              <div className="bg-purple-600 rounded-lg p-2">
+                <CreditCard className="h-5 w-5 text-white" />
+              </div>
+              <div className="flex-1 text-left">
+                <span className="font-medium text-gray-800">Online Payment</span>
+                <p className="text-xs text-gray-500">UPI, Cards, Netbanking</p>
+              </div>
+              <span className="font-bold text-green-600">₹{COD_CHARGE}</span>
+            </button>
+
+            <button
+              onClick={() => setCodPaymentMethod('scan')}
+              className={`w-full flex items-center gap-4 p-4 rounded-lg border-2 transition-all ${
+                codPaymentMethod === 'scan'
+                  ? 'border-green-500 bg-green-50'
+                  : 'border-gray-200 hover:border-green-300'
+              }`}
+            >
+              <img src={scanToPayIcon} alt="Scan to Pay" className="h-10 w-10 object-contain" />
+              <div className="flex-1 text-left">
+                <span className="font-medium text-gray-800">Scan & Pay</span>
+                <p className="text-xs text-gray-500">Works with any UPI app</p>
+              </div>
+              <span className="font-bold text-green-600">₹{COD_CHARGE}</span>
+            </button>
+          </div>
+
+          {codPaymentMethod === 'cashfree' && (
+            <CashfreePayment
+              amount={COD_CHARGE}
+              orderId={`cod_${Date.now()}`}
+              customerName={formData.fullName}
+              customerEmail={formData.email || user?.email || ''}
+              customerPhone={formData.phone}
+              onPaymentSuccess={handleCODCashfreeSuccess}
+              onPaymentFailure={handleCODCashfreeFailure}
+              disabled={loading}
+            />
+          )}
+
+          {codPaymentMethod === 'scan' && (
             <ScanToPayment
               amount={COD_CHARGE}
               qrCodeUrl={merchantSettings.qrUrl || paytmQrCode}
@@ -676,9 +742,11 @@ const Checkout = () => {
               upiId={merchantSettings.upiId}
               merchantName={merchantSettings.merchantName}
             />
-            <Button variant="outline" className="w-full mt-3" onClick={() => setShowCodModal(false)}>
-              Cancel
-            </Button>
+          )}
+
+          <Button variant="outline" className="w-full mt-3" onClick={() => setShowCodModal(false)}>
+            Cancel
+          </Button>
           </div>
         </DialogContent>
       </Dialog>
